@@ -212,6 +212,7 @@
         // If already converted to green, it's now just another jiggle triangle (optional).
         // We'll still allow dragging, but you can disable by checking red.didConvert.
         if (triangleContainsPoint(red, p.x, p.y)) {
+          e.preventDefault(); // Prevent default touch behavior (scroll, tap delay) on mobile
           pointerId = e.pointerId;
           red.isDragging = true;
           canvas.classList.add("dragging");
@@ -219,10 +220,11 @@
           dragOffset.x = red.x - p.x;
           dragOffset.y = red.y - p.y;
         }
-      });
+      }, { passive: false });
 
       canvas.addEventListener("pointermove", (e) => {
         if (!red.isDragging || e.pointerId !== pointerId) return;
+        e.preventDefault(); // Prevent scroll while dragging on mobile
         const p = getPointerPos(e);
 
         red.x = p.x + dragOffset.x;
@@ -231,7 +233,7 @@
         // Keep on screen
         red.x = clamp(red.x, 20, window.innerWidth - 20);
         red.y = clamp(red.y, 20, window.innerHeight - 20);
-      });
+      }, { passive: false });
 
       function endDrag(e) {
         if (!red.isDragging || e.pointerId !== pointerId) return;
