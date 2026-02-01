@@ -1,0 +1,297 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Triangle Loop</title>
+    <style>
+      html, body {
+        margin: 0;
+        height: 100%;
+        background: white;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 100vw;
+        height: 100vh;
+        touch-action: none; /* important for mobile drag */
+        cursor: grab;
+      }
+      canvas.dragging { cursor: grabbing; }
+    </style>
+  </head>
+  <body>
+    <canvas id="c"></canvas>
+
+    <script>
+      // ---------- Helpers ----------
+      function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+
+      function pointInRect(px, py, r) {
+        return px >= r.x && px <= r.x + r.w && py >= r.y && py <= r.y + r.h;
+      }
+
+      // triangle hit test (barycentric)
+      function pointInTriangle(px, py, ax, ay, bx, by, cx, cy) {
+        const v0x = cx - ax, v0y = cy - ay;
+        const v1x = bx - ax, v1y = by - ay;
+        const v2x = px - ax, v2y = py - ay;
+
+        const dot00 = v0x*v0x + v0y*v0y;
+        const dot01 = v0x*v1x + v0y*v1y;
+        const dot02 = v0x*v2x + v0y*v2y;
+        const dot11 = v1x*v1x + v1y*v1y;
+        const dot12 = v1x*v2x + v1y*v2y;
+
+        const invDen = 1 / (dot00 * dot11 - dot01 * dot01);
+        const u = (dot11 * dot02 - dot01 * dot12) * invDen;
+        const v = (dot00 * dot12 - dot01 * dot02) * invDen;
+
+        return (u >= 0) && (v >= 0) && (u + v <= 1);
+      }
+
+      function drawOpenSquare(ctx, r, openGapPx = 200) {
+        // Draw a square outline, but leave a gap on the right side.
+        // We'll leave the gap centered vertically on the right edge.
+        const gapStart = r.y + (r.h - openGapPx) / 2;
+        const gapEnd   = gapStart + openGapPx;
+
+        ctx.beginPath();
+        // top
+        ctx.moveTo(r.x, r.y);
+        ctx.lineTo(r.x + r.w, r.y);
+
+        // right (top segment)
+        ctx.lineTo(r.x + r.w, gapStart);
+
+        // jump over the gap
+        ctx.moveTo(r.x + r.w, gapEnd);
+
+        // right (bottom segment)
+        ctx.lineTo(r.x + r.w, r.y + r.h);
+
+        // bottom
+        ctx.lineTo(r.x, r.y + r.h);
+
+        // left
+        ctx.lineTo(r.x, r.y);
+
+        ctx.stroke();
+      }
+
+      function drawTriangle(ctx, t) {
+        // t: {x,y,size,color,jiggleAmp,jiggleSpeed,phase} + optional dance: rotationSpeed, scalePulseAmp, scalePulseSpeed
+        const time = performance.now() / 1000;
+        // Richer motion: different frequencies for x/y so they trace curves (figure-8 / Lissajous)
+        const jx = Math.sin(time * t.jiggleSpeed + t.phase) * t.jiggleAmp;
+        const jy = Math.cos(time * (t.jiggleSpeed * (t.jiggleYRatio ?? 1)) + (t.phase * (t.phaseY ?? 1))) * t.jiggleAmp;
+
+        const cx = t.x + jx;
+        const cy = t.y + jy;
+        // Optional scale pulse (dancing "bounce")
+        let s = t.size;
+        if (t.scalePulseAmp != null && t.scalePulseSpeed != null) {
+          s *= 1 + t.scalePulseAmp * Math.sin(time * t.scalePulseSpeed + t.phase);
+        }
+
+        // vertices (upright triangle)
+        let ax = cx,       ay = cy - s;
+        let bx = cx - s,   by = cy + s * 0.8;
+        let cx2 = cx + s,  cy2 = cy + s * 0.8;
+
+        // Optional rotation (dancing "twist")
+        if (t.rotationSpeed != null) {
+          const angle = time * t.rotationSpeed + (t.rotationPhase ?? t.phase);
+          const c = Math.cos(angle), si = Math.sin(angle);
+          const rotate = (px, py) => ({
+            x: cx + (px - cx) * c - (py - cy) * si,
+            y: cy + (px - cx) * si + (py - cy) * c
+          });
+          const a = rotate(ax, ay), b = rotate(bx, by), c2 = rotate(cx2, cy2);
+          ax = a.x; ay = a.y; bx = b.x; by = b.y; cx2 = c2.x; cy2 = c2.y;
+        }
+
+        ctx.beginPath();
+        ctx.moveTo(ax, ay);
+        ctx.lineTo(bx, by);
+        ctx.lineTo(cx2, cy2);
+        ctx.closePath();
+
+        ctx.fillStyle = t.color;
+        ctx.fill();
+      }
+
+      function triangleContainsPoint(t, px, py) {
+        // same vertices as drawTriangle, but without jiggle (use base position)
+        // We'll use a slightly forgiving hitbox by inflating size a bit.
+        const s = t.size * 1.15;
+        const ax = t.x,      ay = t.y - s;
+        const bx = t.x - s,  by = t.y + s * 0.8;
+        const cx = t.x + s,  cy = t.y + s * 0.8;
+        return pointInTriangle(px, py, ax, ay, bx, by, cx, cy);
+      }
+
+      // ---------- Canvas setup ----------
+      const canvas = document.getElementById("c");
+      const ctx = canvas.getContext("2d");
+
+      function resize() {
+        const dpr = window.devicePixelRatio || 1;
+        canvas.width = Math.floor(window.innerWidth * dpr);
+        canvas.height = Math.floor(window.innerHeight * dpr);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0); // draw in CSS pixels
+      }
+      window.addEventListener("resize", resize);
+      resize();
+
+      // ---------- Scene ----------
+      const box = {
+        x: 30,
+        y: 30,
+        w: 300,
+        h: 400,
+      };
+
+      // 5 green triangles inside the square (random positions)
+      const triSize = 20;
+      const padding = triSize + 4; // keep triangles fully inside the box
+      const greens = [];
+      for (let i = 0; i < 5; i++) {
+        const phase = Math.random() * Math.PI * 2;
+        greens.push({
+          x: box.x + padding + Math.random() * (box.w - 2 * padding),
+          y: box.y + padding + Math.random() * (box.h - 2 * padding),
+          size: triSize,
+          color: "#1aa34a",
+          jiggleAmp: 4.0,
+          jiggleSpeed: 3.5 + Math.random() * 2,
+          jiggleYRatio: 0.7 + Math.random() * 0.6,
+          phase,
+          phaseY: 0.8 + Math.random() * 0.4,
+          rotationSpeed: (Math.random() - 0.5) * 2.5,
+          rotationPhase: phase * 1.3,
+          scalePulseAmp: 0.12,
+          scalePulseSpeed: 2.5 + Math.random() * 2,
+        });
+      }
+
+      // Red triangle bottom-right
+      const red = {
+        x: 500,
+        y: 500,
+        size: 20,
+        color: "#d11f1f",
+        jiggleAmp: 1.2,
+        jiggleSpeed: 2.0, // slow jiggle
+        phase: Math.random() * Math.PI * 2,
+        isDragging: false,
+        didConvert: false,
+      };
+
+      // Keep red anchored near bottom-right on resize until converted
+      window.addEventListener("resize", () => {
+        if (!red.didConvert && !red.isDragging) {
+          red.x = 500;
+          red.y = 500;
+        }
+      });
+
+      // ---------- Drag logic (pointer events) ----------
+      let pointerId = null;
+      let dragOffset = { x: 0, y: 0 };
+
+      function getPointerPos(e) {
+        // canvas is full screen, so clientX/Y map directly to CSS pixels
+        return { x: e.clientX, y: e.clientY };
+      }
+
+      canvas.addEventListener("pointerdown", (e) => {
+        const p = getPointerPos(e);
+
+        // If already converted to green, it's now just another jiggle triangle (optional).
+        // We'll still allow dragging, but you can disable by checking red.didConvert.
+        if (triangleContainsPoint(red, p.x, p.y)) {
+          pointerId = e.pointerId;
+          red.isDragging = true;
+          canvas.classList.add("dragging");
+          canvas.setPointerCapture(pointerId);
+          dragOffset.x = red.x - p.x;
+          dragOffset.y = red.y - p.y;
+        }
+      });
+
+      canvas.addEventListener("pointermove", (e) => {
+        if (!red.isDragging || e.pointerId !== pointerId) return;
+        const p = getPointerPos(e);
+
+        red.x = p.x + dragOffset.x;
+        red.y = p.y + dragOffset.y;
+
+        // Keep on screen
+        red.x = clamp(red.x, 20, window.innerWidth - 20);
+        red.y = clamp(red.y, 20, window.innerHeight - 20);
+      });
+
+      function endDrag(e) {
+        if (!red.isDragging || e.pointerId !== pointerId) return;
+
+        red.isDragging = false;
+        canvas.classList.remove("dragging");
+
+        // If dropped inside the box => convert
+        if (!red.didConvert && pointInRect(red.x, red.y, box)) {
+          red.didConvert = true;
+          red.color = "#1aa34a";
+          red.jiggleSpeed = 10.0;
+          red.jiggleAmp = 2.0;
+
+          // Join the greens and give it the same dance behaviour
+          const phase = Math.random() * Math.PI * 2;
+          greens.push({
+            ...red,
+            isDragging: undefined,
+            didConvert: undefined,
+            jiggleAmp: 4.0,
+            jiggleSpeed: 3.5 + Math.random() * 2,
+            jiggleYRatio: 0.7 + Math.random() * 0.6,
+            phase,
+            phaseY: 0.8 + Math.random() * 0.4,
+            rotationSpeed: (Math.random() - 0.5) * 2.5,
+            rotationPhase: phase * 1.3,
+            scalePulseAmp: 0.12,
+            scalePulseSpeed: 2.5 + Math.random() * 2,
+          });
+          // And remove / disable the separate red object by moving it off-screen:
+          red.x = -9999;
+          red.y = -9999;
+        }
+
+        pointerId = null;
+      }
+
+      canvas.addEventListener("pointerup", endDrag);
+      canvas.addEventListener("pointercancel", endDrag);
+
+      // ---------- Render loop ----------
+      function tick() {
+        // Clear
+        ctx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+
+        // Box
+        ctx.lineWidth = 3;
+        ctx.strokeStyle = "#000";
+        drawOpenSquare(ctx, box, 50);
+
+        // Greens
+        for (const t of greens) drawTriangle(ctx, t);
+
+        // Red (if not yet converted)
+        if (!red.didConvert) drawTriangle(ctx, red);
+
+        requestAnimationFrame(tick);
+      }
+      tick();
+    </script>
+  </body>
+</html>
