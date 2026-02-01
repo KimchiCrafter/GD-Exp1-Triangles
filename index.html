@@ -178,8 +178,8 @@
 
       // Red triangle bottom-right
       const red = {
-        x: 300,
-        y: 300,
+        x: 200,
+        y: 375,
         size: 20,
         color: "#d11f1f",
         jiggleAmp: 1.2,
@@ -192,8 +192,8 @@
       // Keep red anchored near bottom-right on resize until converted
       window.addEventListener("resize", () => {
         if (!red.didConvert && !red.isDragging) {
-          red.x = 300;
-          red.y = 300;
+          red.x = 200;
+          red.y = 375;
         }
       });
 
